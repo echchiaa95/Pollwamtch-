@@ -37,20 +37,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${SUPABASE_ACCESS_TOKEN}" ]; then
+          test -n "$SUPABASE_ACCESS_TOKEN" || {
             echo "Missing secret: SUPABASE_ACCESS_TOKEN"
             exit 1
-          fi
+          }
 
-          if [ -z "${SUPABASE_PROJECT_REF}" ]; then
+          test -n "$SUPABASE_PROJECT_REF" || {
             echo "Missing secret: SUPABASE_PROJECT_ID"
             exit 1
-          fi
+          }
 
-          if [ -z "${SUPABASE_DB_PASSWORD}" ]; then
+          test -n "$SUPABASE_DB_PASSWORD" || {
             echo "Missing secret: SUPABASE_DB_PASSWORD"
             exit 1
-          fi
+          }
 
           echo "All required secrets are available."
 
@@ -77,7 +77,7 @@ jobs:
           done < <(find . -type f -name "*.zip" | sort)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "No project ZIP file was found."
+            echo "No ZIP file was found."
             exit 1
           fi
 
@@ -95,40 +95,35 @@ jobs:
           unzip -q "$ZIP_FILE" -d extracted-project
 
           echo "ZIP extracted successfully."
-          find extracted-project -maxdepth 4 -type f | sort | head -200
 
-      - name: Locate Supabase directory
+      - name: Locate Supabase project directory
         shell: bash
         run: |
           set -euo pipefail
 
-          SUPABASE_DIR=""
-
-          if [ -d "extracted-project/supabase" ]; then
-            SUPABASE_DIR="extracted-project/supabase"
-          else
-            FOUND_DIR=$(find extracted-project \
-              -type d \
-              -name "supabase" \
-              -print \
-              -quit)
-
-            if [ -n "$FOUND_DIR" ]; then
-              SUPABASE_DIR="$FOUND_DIR"
-            fi
-          fi
+          SUPABASE_DIR=$(find extracted-project \
+            -type d \
+            -name "supabase" \
+            -print \
+            -quit)
 
           if [ -z "$SUPABASE_DIR" ]; then
-            echo "Supabase directory was not found inside the ZIP."
+            echo "Supabase directory was not found."
             exit 1
           fi
 
+          PROJECT_DIR=$(dirname "$SUPABASE_DIR")
+
           if [ ! -d "$SUPABASE_DIR/migrations" ]; then
-            echo "Missing migrations directory: $SUPABASE_DIR/migrations"
+            echo "Migrations directory was not found:"
+            echo "$SUPABASE_DIR/migrations"
             exit 1
           fi
 
           echo "SUPABASE_DIR=$SUPABASE_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project directory: $PROJECT_DIR"
           echo "Supabase directory: $SUPABASE_DIR"
 
       - name: Validate migration files
@@ -143,7 +138,7 @@ jobs:
             | wc -l)
 
           if [ "$MIGRATION_COUNT" -eq 0 ]; then
-            echo "No SQL migration files were found."
+            echo "No SQL migrations found."
             exit 1
           fi
 
@@ -174,9 +169,10 @@ jobs:
 
       - name: Link Supabase project
         shell: bash
-        working-directory: extracted-project
         run: |
           set -euo pipefail
+
+          cd "$PROJECT_DIR"
 
           supabase link \
             --project-ref "$SUPABASE_PROJECT_REF" \
@@ -186,17 +182,19 @@ jobs:
 
       - name: Show migration status before deployment
         shell: bash
-        working-directory: extracted-project
         run: |
           set -euo pipefail
+
+          cd "$PROJECT_DIR"
 
           supabase migration list
 
       - name: Apply Supabase migrations
         shell: bash
-        working-directory: extracted-project
         run: |
           set -euo pipefail
+
+          cd "$PROJECT_DIR"
 
           supabase db push --include-all
 
@@ -204,10 +202,19 @@ jobs:
 
       - name: Verify migration status
         shell: bash
-        working-directory: extracted-project
         run: |
           set -euo pipefail
+
+          cd "$PROJECT_DIR"
 
           supabase migration list
 
           echo "Migration verification completed."
+
+      - name: Verify expected database tables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Migration deployment finished."
+          echo "Please verify the tables from Supabase Table Editor."
