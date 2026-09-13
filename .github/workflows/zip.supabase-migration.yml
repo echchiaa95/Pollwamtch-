@@ -19,16 +19,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Extract ZIP and migrate Supabase
+  migrate:
+    name: Extract ZIP and apply Supabase migrations
     runs-on: ubuntu-latest
+
+    # جعل Secrets متاحة لجميع خطوات الـ Workflow
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "Error: SUPABASE_ACCESS_TOKEN is missing."
+            exit 1
+          fi
+
+          if [ -z "$SUPABASE_PROJECT_ID" ]; then
+            echo "Error: SUPABASE_PROJECT_ID is missing."
+            exit 1
+          fi
+
+          if [ -z "$SUPABASE_DB_PASSWORD" ]; then
+            echo "Error: SUPABASE_DB_PASSWORD is missing."
+            exit 1
+          fi
+
+          echo "All required secrets are available."
+
       - name: Find project ZIP
-        id: find_zip
         shell: bash
         run: |
           set -euo pipefail
@@ -37,12 +64,12 @@ jobs:
             ! -path './.git/*' | head -n 1)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "لم يتم العثور على ملف ZIP داخل المستودع."
+            echo "Error: No ZIP file was found."
             exit 1
           fi
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "تم العثور على: $ZIP_FILE"
+          echo "Found ZIP file: $ZIP_FILE"
 
       - name: Extract project ZIP
         shell: bash
@@ -54,7 +81,7 @@ jobs:
 
           unzip -q "$ZIP_FILE" -d extracted-project
 
-          echo "محتويات الأرشيف:"
+          echo "Extracted project files:"
           find extracted-project -maxdepth 4 -type f | head -n 100
 
       - name: Locate Supabase directory
@@ -62,16 +89,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          SUPABASE_DIR="$(find extracted-project -type d -path '*/supabase' \
-            | head -n 1)"
+          SUPABASE_DIR="$(find extracted-project \
+            -type d -path '*/supabase' | head -n 1)"
 
           if [ -z "$SUPABASE_DIR" ]; then
-            echo "لم يتم العثور على مجلد supabase داخل ZIP."
+            echo "Error: The supabase directory was not found inside ZIP."
             exit 1
           fi
 
+          PROJECT_ROOT="$(dirname "$SUPABASE_DIR")"
+
           echo "SUPABASE_DIR=$SUPABASE_DIR" >> "$GITHUB_ENV"
-          echo "تم العثور على مجلد Supabase: $SUPABASE_DIR"
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "Supabase directory: $SUPABASE_DIR"
+          echo "Project root: $PROJECT_ROOT"
 
       - name: Validate migrations
         shell: bash
@@ -81,64 +113,64 @@ jobs:
           MIGRATIONS_DIR="$SUPABASE_DIR/migrations"
 
           if [ ! -d "$MIGRATIONS_DIR" ]; then
-            echo "مجلد migrations غير موجود:"
-            echo "$MIGRATIONS_DIR"
+            echo "Error: migrations directory was not found."
+            echo "Expected path: $MIGRATIONS_DIR"
             exit 1
           fi
 
-          echo "ملفات migrations:"
-          find "$MIGRATIONS_DIR" -maxdepth 1 -type f -print
+          if ! find "$MIGRATIONS_DIR" -maxdepth 1 -type f \
+            -name '*.sql' | grep -q .; then
+            echo "Error: No SQL migration files were found."
+            exit 1
+          fi
+
+          echo "Migration files found:"
+          find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' -print
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
           version: latest
 
-      - name: Validate required secrets
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      - name: Link Supabase project
+        shell: bash
         run: |
           set -euo pipefail
 
-          test -n "$SUPABASE_ACCESS_TOKEN" || {
-            echo "Secret SUPABASE_ACCESS_TOKEN غير موجود."
-            exit 1
-          }
+          cd "$PROJECT_ROOT"
 
-          test -n "$SUPABASE_PROJECT_ID" || {
-            echo "Secret SUPABASE_PROJECT_ID غير موجود."
-            exit 1
-          }
-
-          test -n "$SUPABASE_DB_PASSWORD" || {
-            echo "Secret SUPABASE_DB_PASSWORD غير موجود."
-            exit 1
-          }
-
-      - name: Link Supabase project
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: |
           supabase link \
             --project-ref "$SUPABASE_PROJECT_ID" \
             --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Apply migrations
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - name: Check migration status
+        shell: bash
         run: |
           set -euo pipefail
 
-          cd "$SUPABASE_DIR"
+          cd "$PROJECT_ROOT"
 
           supabase migration list
+
+      - name: Apply database migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
           supabase db push --include-all
+
+      - name: Verify migration status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
           supabase migration list
 
       - name: Deployment summary
+        shell: bash
         run: |
-          echo "تم استخراج ZIP وتطبيق migrations على Supabase بنجاح."
+          echo "Supabase migrations were applied successfully."
