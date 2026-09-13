@@ -23,7 +23,6 @@ jobs:
     name: Extract ZIP and apply Supabase migrations
     runs-on: ubuntu-latest
 
-    # جعل Secrets متاحة لجميع خطوات الـ Workflow
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
@@ -81,8 +80,7 @@ jobs:
 
           unzip -q "$ZIP_FILE" -d extracted-project
 
-          echo "Extracted project files:"
-          find extracted-project -maxdepth 4 -type f | head -n 100
+          echo "ZIP extracted successfully."
 
       - name: Locate Supabase directory
         shell: bash
@@ -93,7 +91,7 @@ jobs:
             -type d -path '*/supabase' | head -n 1)"
 
           if [ -z "$SUPABASE_DIR" ]; then
-            echo "Error: The supabase directory was not found inside ZIP."
+            echo "Error: The supabase directory was not found."
             exit 1
           fi
 
@@ -114,23 +112,34 @@ jobs:
 
           if [ ! -d "$MIGRATIONS_DIR" ]; then
             echo "Error: migrations directory was not found."
-            echo "Expected path: $MIGRATIONS_DIR"
             exit 1
           fi
 
-          if ! find "$MIGRATIONS_DIR" -maxdepth 1 -type f \
-            -name '*.sql' | grep -q .; then
+          if ! find "$MIGRATIONS_DIR" -maxdepth 1 \
+            -type f -name '*.sql' | grep -q .; then
             echo "Error: No SQL migration files were found."
             exit 1
           fi
 
-          echo "Migration files found:"
-          find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' -print
+          echo "Migration files:"
+          find "$MIGRATIONS_DIR" -maxdepth 1 \
+            -type f -name '*.sql' -print
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
           version: latest
+
+      - name: Login to Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          supabase login \
+            --token "$SUPABASE_ACCESS_TOKEN" \
+            --name github-actions
+
+          echo "Supabase CLI login completed."
 
       - name: Link Supabase project
         shell: bash
