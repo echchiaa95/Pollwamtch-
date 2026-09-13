@@ -1,0 +1,120 @@
+name: Deploy PollWatch to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - "**/*.zip"
+      - ".github/workflows/deploy-pages.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Extract ZIP and build website
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE=$(find . \
+            -type f \
+            -name "*.zip" \
+            ! -path "./.git/*" \
+            | sort \
+            | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found."
+            exit 1
+          fi
+
+          echo "ZIP file: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf extracted-project
+          mkdir -p extracted-project
+
+          unzip -q "$ZIP_FILE" -d extracted-project
+
+      - name: Locate web application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WEB_DIR=$(find extracted-project \
+            -type d \
+            -path "*/apps/web" \
+            -print \
+            -quit)
+
+          if [ -z "$WEB_DIR" ]; then
+            echo "apps/web directory was not found."
+            exit 1
+          fi
+
+          echo "WEB_DIR=$WEB_DIR" >> "$GITHUB_ENV"
+          echo "Web directory: $WEB_DIR"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WEB_DIR"
+          npm ci
+
+      - name: Build website
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WEB_DIR"
+          npm run build
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: extracted-project/pollwatch-platform/apps/web/dist
+
+  deploy:
+    name: Deploy website
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
