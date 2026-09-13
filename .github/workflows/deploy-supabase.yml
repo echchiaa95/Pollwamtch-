@@ -1,0 +1,128 @@
+name: Deploy Supabase migrations
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/migrations/**"
+      - "supabase/config.toml"
+      - ".github/workflows/deploy-supabase.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Apply Supabase migrations
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${SUPABASE_ACCESS_TOKEN}" || {
+            echo "Missing secret: SUPABASE_ACCESS_TOKEN"
+            exit 1
+          }
+
+          test -n "${SUPABASE_PROJECT_REF}" || {
+            echo "Missing secret: SUPABASE_PROJECT_REF"
+            exit 1
+          }
+
+          test -n "${SUPABASE_DB_PASSWORD}" || {
+            echo "Missing secret: SUPABASE_DB_PASSWORD"
+            exit 1
+          }
+
+      - name: Validate migrations directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "supabase/migrations" ]; then
+            echo "Missing directory: supabase/migrations"
+            exit 1
+          fi
+
+          migration_count=$(find supabase/migrations \
+            -maxdepth 1 \
+            -type f \
+            -name "*.sql" \
+            | wc -l)
+
+          if [ "$migration_count" -eq 0 ]; then
+            echo "No SQL migrations found."
+            exit 1
+          fi
+
+          echo "Found $migration_count migration file(s):"
+          find supabase/migrations \
+            -maxdepth 1 \
+            -type f \
+            -name "*.sql" \
+            -print \
+            | sort
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Login to Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          supabase login \
+            --token "$SUPABASE_ACCESS_TOKEN" \
+            --name github-actions
+
+          echo "Supabase CLI login completed."
+
+      - name: Link Supabase project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          supabase link \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --password "$SUPABASE_DB_PASSWORD"
+
+          echo "Supabase project linked."
+
+      - name: Show migration status before deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase migration list
+
+      - name: Apply Supabase migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          supabase db push --include-all
+
+          echo "Supabase migrations applied successfully."
+
+      - name: Verify migration status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          supabase migration list
+
+          echo "Migration verification completed."
