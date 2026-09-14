@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: github-pages
   cancel-in-progress: true
 
 jobs:
@@ -29,55 +29,65 @@ jobs:
         with:
           node-version: 22
 
-      - name: Find application directory
-        id: detect
+      - name: Find and extract ZIP
+        id: extract
         shell: bash
         run: |
           set -e
 
-          echo "Repository structure:"
-          find . -maxdepth 5 -type f \( -name "package.json" -o -name "package-lock.json" \) -print
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
 
-          PACKAGE_JSON="$(find . -type f -name package.json \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.git/*" \
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository."
+            exit 1
+          fi
+
+          echo "ZIP file found: $ZIP_FILE"
+
+          mkdir -p extracted-project
+          unzip -q "$ZIP_FILE" -d extracted-project
+
+          echo "Searching for package.json..."
+
+          PACKAGE_JSON="$(find extracted-project \
+            -type f \
+            -name package.json \
+            -not -path '*/node_modules/*' \
             | head -n 1)"
 
           if [ -z "$PACKAGE_JSON" ]; then
-            echo "ERROR: package.json was not found anywhere in the repository."
+            echo "ERROR: package.json was not found inside the ZIP."
             exit 1
           fi
 
           APP_DIR="$(dirname "$PACKAGE_JSON")"
 
-          echo "Found package.json: $PACKAGE_JSON"
           echo "Application directory: $APP_DIR"
-
           echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
-        working-directory: ${{ steps.detect.outputs.app_dir }}
+        working-directory: ${{ steps.extract.outputs.app_dir }}
         run: npm ci
 
       - name: Build application
-        working-directory: ${{ steps.detect.outputs.app_dir }}
+        working-directory: ${{ steps.extract.outputs.app_dir }}
         run: npm run build
 
-      - name: Verify build output
-        working-directory: ${{ steps.detect.outputs.app_dir }}
+      - name: Verify dist directory
+        working-directory: ${{ steps.extract.outputs.app_dir }}
         run: |
           if [ ! -d "dist" ]; then
             echo "ERROR: dist directory was not created."
             exit 1
           fi
 
-          echo "Build output verified:"
+          echo "Build output verified successfully."
           find dist -maxdepth 2 -type f -print
 
-      - name: Upload Pages artifact
+      - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ steps.detect.outputs.app_dir }}/dist
+          path: ${{ steps.extract.outputs.app_dir }}/dist
 
   deploy:
     name: Deploy to GitHub Pages
@@ -89,6 +99,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy artifact
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
