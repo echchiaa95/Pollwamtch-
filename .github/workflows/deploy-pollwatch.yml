@@ -1,0 +1,224 @@
+name: Build and Deploy PollWatch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**.zip"
+      - ".github/workflows/deploy-pollwatch.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pollwatch-deployment
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          : "${SUPABASE_ACCESS_TOKEN:?SUPABASE_ACCESS_TOKEN is missing}"
+          : "${SUPABASE_PROJECT_REF:?SUPABASE_PROJECT_REF is missing}"
+          : "${SUPABASE_DB_PASSWORD:?SUPABASE_DB_PASSWORD is missing}"
+
+          echo "Required secrets are available."
+
+      - name: Find project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' \
+            -not -path './.git/*' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No project ZIP file was found."
+            exit 1
+          fi
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Found ZIP file: $ZIP_FILE"
+
+      - name: Extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf extracted-project
+          mkdir -p extracted-project
+
+          unzip -q "$ZIP_FILE" -d extracted-project
+
+          echo "Project ZIP extracted successfully."
+          find extracted-project -maxdepth 3 -type f \
+            \( -name 'package.json' -o -name '*.sql' \) | head -n 30
+
+      - name: Locate web and Supabase directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WEB_PACKAGE="$(find extracted-project -type f \
+            -name package.json \
+            -not -path '*/node_modules/*' | head -n 1)"
+
+          if [ -z "$WEB_PACKAGE" ]; then
+            echo "ERROR: package.json was not found."
+            exit 1
+          fi
+
+          WEB_DIR="$(dirname "$WEB_PACKAGE")"
+
+          SUPABASE_DIR="$(find extracted-project -type d \
+            -name supabase | head -n 1)"
+
+          if [ -z "$SUPABASE_DIR" ]; then
+            echo "ERROR: supabase directory was not found."
+            exit 1
+          fi
+
+          echo "WEB_DIR=$WEB_DIR" >> "$GITHUB_ENV"
+          echo "SUPABASE_DIR=$SUPABASE_DIR" >> "$GITHUB_ENV"
+
+          echo "WEB_DIR=$WEB_DIR"
+          echo "SUPABASE_DIR=$SUPABASE_DIR"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.WEB_DIR }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ env.WEB_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build website
+        working-directory: ${{ env.WEB_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+
+      - name: Prepare GitHub Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$WEB_DIR/dist" ]; then
+            echo "ERROR: dist directory was not created."
+            exit 1
+          fi
+
+          echo "Website build completed."
+          find "$WEB_DIR/dist" -maxdepth 2 -type f | head -n 20
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.WEB_DIR }}/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Login to Supabase CLI
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          supabase login \
+            --token "$SUPABASE_ACCESS_TOKEN" \
+            --name github-actions
+
+          echo "Supabase CLI login completed."
+
+      - name: Link Supabase project
+        shell: bash
+        env:
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          : "${SUPABASE_PROJECT_REF:?SUPABASE_PROJECT_REF is missing}"
+          : "${SUPABASE_DB_PASSWORD:?SUPABASE_DB_PASSWORD is missing}"
+
+          cd "$SUPABASE_DIR"
+
+          supabase link \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --password "$SUPABASE_DB_PASSWORD"
+
+          echo "Supabase project linked successfully."
+
+      - name: Show migration files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -d "$SUPABASE_DIR/migrations" ]; then
+            find "$SUPABASE_DIR/migrations" \
+              -maxdepth 1 -type f -name '*.sql' -print | sort
+          else
+            echo "ERROR: supabase/migrations directory was not found."
+            exit 1
+          fi
+
+      - name: Apply Supabase migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$SUPABASE_DIR"
+
+          supabase db push --include-all
+
+          echo "Supabase migrations applied successfully."
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "PollWatch deployment completed."
+          echo "GitHub Pages deployment URL:"
+          echo "${{ steps.deployment.outputs.page_url }}"
