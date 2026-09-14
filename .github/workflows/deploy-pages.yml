@@ -29,26 +29,30 @@ jobs:
         with:
           node-version: 22
 
-      - name: Detect application directory
+      - name: Find application directory
         id: detect
         shell: bash
         run: |
           set -e
 
-          if [ -f "apps/web/package.json" ]; then
-            APP_DIR="apps/web"
-          elif [ -f "package.json" ]; then
-            APP_DIR="."
-          else
-            APP_DIR="$(find . -name package.json -not -path '*/node_modules/*' -printf '%h\n' | head -n 1)"
-          fi
+          echo "Repository structure:"
+          find . -maxdepth 5 -type f \( -name "package.json" -o -name "package-lock.json" \) -print
 
-          if [ -z "$APP_DIR" ] || [ ! -f "$APP_DIR/package.json" ]; then
-            echo "package.json was not found"
+          PACKAGE_JSON="$(find . -type f -name package.json \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" \
+            | head -n 1)"
+
+          if [ -z "$PACKAGE_JSON" ]; then
+            echo "ERROR: package.json was not found anywhere in the repository."
             exit 1
           fi
 
-          echo "APP_DIR=$APP_DIR"
+          APP_DIR="$(dirname "$PACKAGE_JSON")"
+
+          echo "Found package.json: $PACKAGE_JSON"
+          echo "Application directory: $APP_DIR"
+
           echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
@@ -63,9 +67,12 @@ jobs:
         working-directory: ${{ steps.detect.outputs.app_dir }}
         run: |
           if [ ! -d "dist" ]; then
-            echo "dist directory was not created"
+            echo "ERROR: dist directory was not created."
             exit 1
           fi
+
+          echo "Build output verified:"
+          find dist -maxdepth 2 -type f -print
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
