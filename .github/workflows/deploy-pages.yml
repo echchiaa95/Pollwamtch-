@@ -20,10 +20,6 @@ jobs:
     name: Build application
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: apps/web
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,25 +27,56 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          node-version: 22
+
+      - name: Detect application directory
+        id: detect
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "apps/web/package.json" ]; then
+            APP_DIR="apps/web"
+          elif [ -f "package.json" ]; then
+            APP_DIR="."
+          else
+            APP_DIR="$(find . -name package.json -not -path '*/node_modules/*' -printf '%h\n' | head -n 1)"
+          fi
+
+          if [ -z "$APP_DIR" ] || [ ! -f "$APP_DIR/package.json" ]; then
+            echo "package.json was not found"
+            exit 1
+          fi
+
+          echo "APP_DIR=$APP_DIR"
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
+        working-directory: ${{ steps.detect.outputs.app_dir }}
         run: npm ci
 
       - name: Build application
+        working-directory: ${{ steps.detect.outputs.app_dir }}
         run: npm run build
+
+      - name: Verify build output
+        working-directory: ${{ steps.detect.outputs.app_dir }}
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "dist directory was not created"
+            exit 1
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: apps/web/dist
+          path: ${{ steps.detect.outputs.app_dir }}/dist
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
